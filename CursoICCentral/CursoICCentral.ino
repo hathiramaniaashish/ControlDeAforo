@@ -2,6 +2,9 @@
 #include <LoRa.h>
 #include <Arduino_PMIC.h>
 #include <Wire.h> // Arduino's I2C library
+#include <RTCZero.h>
+
+RTCZero rtc;
 
 #define LCD05_I2C_ADDRESS byte((0xC6)>>1)
 #define LCD05_I2C_INIT_DELAY 100 // in milliseconds
@@ -125,6 +128,11 @@ byte read_fifo_length(byte address)
 
 const char* the_msg = "Personas:";
 const char* the_msg2 = "Altura:";
+const char* the_msg3 = "INTRUSO DETECTADO";
+
+volatile bool alarm = 0;
+volatile bool sentAlarm = 0;
+volatile bool turnOff = 0;
 
 volatile int personas = 0;
 volatile int altura = 0;
@@ -160,6 +168,14 @@ void setup()
 
   Serial.begin(115200);  
   while (!Serial); 
+
+  Serial.println("Initializing RTCZero ...");
+  rtc.begin();
+
+  if (!setDateTime(__DATE__, __TIME__)) {
+    SerialUSB.println("setDateTime() failed!\nExiting ...");
+    while (1) { ; }
+  }
 
   Serial.println("initializing Wire interface ...");
   Wire.begin();
@@ -235,43 +251,151 @@ void setup()
 // --------------------------------------------------------------------
 // Loop function
 // --------------------------------------------------------------------
-void loop()
-{ 
-  ascii_chars(
-    LCD05_I2C_ADDRESS,
-    reinterpret_cast<byte*>(const_cast<char*>(the_msg)),
-    strlen(the_msg)
-  );
+void loop() {
 
-  char cadena[7];
-  sprintf(cadena, "%d", personas);
+  if (alarm) {
+    ascii_chars(
+      LCD05_I2C_ADDRESS,
+      reinterpret_cast<byte*>(const_cast<char*>(the_msg3)),
+      strlen(the_msg3));
+    delay(500);
+    clear_screen(LCD05_I2C_ADDRESS);
+  }
 
-  ascii_chars(
-    LCD05_I2C_ADDRESS,
-    reinterpret_cast<byte*>(const_cast<char*>(cadena)),
-    strlen(cadena)
-  );
+  else {
+    ascii_chars(
+      LCD05_I2C_ADDRESS,
+      reinterpret_cast<byte*>(const_cast<char*>(the_msg)),
+      strlen(the_msg));
 
-  set_cursor(LCD05_I2C_ADDRESS, 17);
+    char cadena[7];
+    sprintf(cadena, "%d", personas);
 
-  ascii_chars(
-    LCD05_I2C_ADDRESS,
-    reinterpret_cast<byte*>(const_cast<char*>(the_msg2)),
-    strlen(the_msg2)
-  );
+    ascii_chars(
+      LCD05_I2C_ADDRESS,
+      reinterpret_cast<byte*>(const_cast<char*>(cadena)),
+      strlen(cadena));
 
-  char cadena2[7];
-  sprintf(cadena2, "%d", altura);
+    set_cursor(LCD05_I2C_ADDRESS, 17);
 
-  ascii_chars(
-    LCD05_I2C_ADDRESS,
-    reinterpret_cast<byte*>(const_cast<char*>(cadena2)),
-    strlen(cadena2)
-  );
+    ascii_chars(
+      LCD05_I2C_ADDRESS,
+      reinterpret_cast<byte*>(const_cast<char*>(the_msg2)),
+      strlen(the_msg2));
 
-  delay(500);
+    char cadena2[7];
+    sprintf(cadena2, "%d", altura);
 
-  clear_screen(LCD05_I2C_ADDRESS);
+    ascii_chars(
+      LCD05_I2C_ADDRESS,
+      reinterpret_cast<byte*>(const_cast<char*>(cadena2)),
+      strlen(cadena2));
+
+    delay(500);
+
+    clear_screen(LCD05_I2C_ADDRESS);
+  }
+
+  static uint32_t lastSendTime_ms = 0;
+  static uint16_t msgCount = 0;
+  static uint32_t tx_begin_ms = 0;
+
+  if (alarm && !sentAlarm) {
+
+    if (!transmitting) {
+      uint8_t payload[1];
+      uint8_t payloadLength = 1;
+
+      payload[0] = alarm;
+
+      transmitting = true;
+      txDoneFlag = false;
+      tx_begin_ms = millis();
+
+      sendMessage(payload, payloadLength, msgCount);
+      Serial.print("Sending packet ");
+      Serial.print(msgCount++);
+      Serial.print(": ");
+      printBinaryPayload(payload, payloadLength);
+    }
+
+    if (transmitting && txDoneFlag) {
+      uint32_t TxTime_ms = millis() - tx_begin_ms;
+      Serial.print("----> TX completed in ");
+      Serial.print(TxTime_ms);
+      Serial.println(" msecs");
+
+      // Ajustamos txInterval_ms para respetar un duty cycle del 1%
+      uint32_t lapse_ms = tx_begin_ms - lastSendTime_ms;
+      lastSendTime_ms = tx_begin_ms;
+      float duty_cycle = (100.0f * TxTime_ms) / lapse_ms;
+
+      Serial.print("Duty cycle: ");
+      Serial.print(duty_cycle, 1);
+      Serial.println(" %\n");
+
+      transmitting = false;
+      sentAlarm = 1;
+      // Reactivamos la recepción de mensajes, que se desactiva
+      // en segundo plano mientras se transmite
+      LoRa.receive();
+    }
+  }
+
+  if (!alarm && Serial.availale()){
+    delay(200);
+    clearBuffer();
+  }
+
+  if (alarm && sentAlarm && Serial.available()){
+    delay(200);
+    clearBuffer();
+    turnOff = 1;
+  }
+
+  if (alarm && sentAlarm && turnOff) {
+
+    if (!transmitting) {
+      uint8_t payload[1];
+      uint8_t payloadLength = 1;
+
+      payload[0] = 0;
+
+      transmitting = true;
+      txDoneFlag = false;
+      tx_begin_ms = millis();
+
+      sendMessage(payload, payloadLength, msgCount);
+      Serial.print("Sending packet ");
+      Serial.print(msgCount++);
+      Serial.print(": ");
+      printBinaryPayload(payload, payloadLength);
+    }
+
+    if (transmitting && txDoneFlag) {
+      uint32_t TxTime_ms = millis() - tx_begin_ms;
+      Serial.print("----> TX completed in ");
+      Serial.print(TxTime_ms);
+      Serial.println(" msecs");
+
+      // Ajustamos txInterval_ms para respetar un duty cycle del 1%
+      uint32_t lapse_ms = tx_begin_ms - lastSendTime_ms;
+      lastSendTime_ms = tx_begin_ms;
+      float duty_cycle = (100.0f * TxTime_ms) / lapse_ms;
+
+      Serial.print("Duty cycle: ");
+      Serial.print(duty_cycle, 1);
+      Serial.println(" %\n");
+
+      transmitting = false;
+      sentAlarm = 0;
+      alarm = 0;
+      turnOff = 0;
+      // Reactivamos la recepción de mensajes, que se desactiva
+      // en segundo plano mientras se transmite
+      LoRa.receive();
+    }
+  }
 }
 
 // --------------------------------------------------------------------
@@ -317,8 +441,8 @@ void onReceive(int packetSize)
   }
   
   if (incomingLength != receivedBytes) {// Verificamos la longitud del mensaje
-    Serial.print("Receiving error: declared message length " + String(incomingLength));
-    Serial.println(" does not match length " + String(receivedBytes));
+    // Serial.print("Receiving error: declared message length " + String(incomingLength));
+    // Serial.println(" does not match length " + String(receivedBytes));
     return;                             
   }
 
@@ -328,7 +452,7 @@ void onReceive(int packetSize)
   // SyncWord y solo tiene sentido si hay más de dos receptores activos
   // compartiendo la misma palabra de sincronización
   if ((recipient & localAddress) != localAddress ) {
-    Serial.println("Receiving error: This message is not for me.");
+    // Serial.println("Receiving error: This message is not for me.");
     return;
   }
 
@@ -345,6 +469,10 @@ void onReceive(int packetSize)
       altura = 0;
     }
   }
+
+  if (sender != localAddress && (sender == 0x41 || sender == 0x42) && (rtc.getHours() >= 12 || rtc.getHours() <= 4)){
+    alarm = 1;
+  }
 }
 
 
@@ -359,5 +487,30 @@ void printBinaryPayload(uint8_t * payload, uint8_t payloadLength)
     Serial.print((payload[i] & 0xF0) >> 4, HEX);
     Serial.print(payload[i] & 0x0F, HEX);
     Serial.print(" ");
+  }
+}
+
+bool setDateTime(const char* date_str, const char* time_str) {
+  char month_str[4];
+  char months[12][4] = { "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug",
+                         "Sep", "Oct", "Nov", "Dec" };
+  uint16_t i, mday, month, hour, min, sec, year;
+  if (sscanf(date_str, "%3s %hu %hu", month_str, &mday, &year) != 3) return false;
+  if (sscanf(time_str, "%hu:%hu:%hu", &hour, &min, &sec) != 3) return false;
+  for (i = 0; i < 12; i++) {
+    if (!strncmp(month_str, months[i], 3)) {
+      month = i + 1;
+      break;
+    }
+  }
+  if (i == 12) return false;
+  rtc.setTime((uint8_t)hour, (uint8_t)min, (uint8_t)sec);
+  rtc.setDate((uint8_t)mday, (uint8_t)month, (uint8_t)(year - 2000));
+  return true;
+}
+
+void clearBuffer(){
+  while(Serial.available() > 0){
+    Serial.read();
   }
 }

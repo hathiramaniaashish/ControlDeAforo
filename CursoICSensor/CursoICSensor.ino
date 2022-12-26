@@ -25,8 +25,10 @@
 const int sensorDelay = 100;
 volatile int sensorTimer = millis();
 const int buzzerDelay = 250;
+const int alarmDelay = 100;
 volatile int buzzerTimer = 0;
 volatile int height = 0;
+volatile bool alarm = 0;
 #define doorHeight 192
 const int SensorLimit = doorHeight/2;
 // Para Sensor 02727
@@ -75,8 +77,8 @@ volatile bool samePerson = false;
 
 // NOTA: Ajustar estas variables 
 // Direcciones -> 0x40(central) 0x41(entrada) 0x42(salida) 0x43(palabra de sincronizacion)
-const uint8_t localAddress = 0x42;     // Dirección de este dispositivo
-uint8_t destination = 0xFF;            // Dirección de destino, 0xFF es la dirección de broadcast
+const uint8_t localAddress = 0x41;     // Dirección de este dispositivo
+uint8_t destination = 0x40;            // Dirección de destino, 0xFF es la dirección de broadcast
 
 volatile bool txDoneFlag = true;       // Flag para indicar cuando ha finalizado una transmisión
 volatile bool transmitting = false;
@@ -178,80 +180,93 @@ void setup()
 // --------------------------------------------------------------------
 // Loop function
 // --------------------------------------------------------------------
-void loop()
-{
+void loop() {
 
-  if (buzzerTimer <= millis() && digitalRead(BUZZER_PIN) == HIGH){
-    digitalWrite(BUZZER_PIN, LOW);
-  }
+  if (!alarm) {
 
-  write_command(SRF02_I2C_ADDRESS,REAL_RANGING_MODE_CMS);
-  delay(SRF02_RANGING_DELAY);
-  
-  byte high_byte_range=read_register(SRF02_I2C_ADDRESS,RANGE_HIGH_BYTE);
-  byte low_byte_range=read_register(SRF02_I2C_ADDRESS,RANGE_LOW_BYTE);
-  byte high_min=read_register(SRF02_I2C_ADDRESS,AUTOTUNE_MINIMUM_HIGH_BYTE);
-  byte low_min=read_register(SRF02_I2C_ADDRESS,AUTOTUNE_MINIMUM_LOW_BYTE);
-
-  int distance = int((high_byte_range<<8) | low_byte_range);
-  if (distance <= SensorLimit){
-    if (!samePerson){
-      detected = true;
-      samePerson = true;
-      height = doorHeight - distance;
-      Serial.println(height);
-      digitalWrite(BUZZER_PIN, HIGH);
-      buzzerTimer = millis() + buzzerDelay;
+    if (buzzerTimer <= millis() && digitalRead(BUZZER_PIN) == HIGH) {
+      digitalWrite(BUZZER_PIN, LOW);
     }
+
+    write_command(SRF02_I2C_ADDRESS, REAL_RANGING_MODE_CMS);
+    delay(SRF02_RANGING_DELAY);
+
+    byte high_byte_range = read_register(SRF02_I2C_ADDRESS, RANGE_HIGH_BYTE);
+    byte low_byte_range = read_register(SRF02_I2C_ADDRESS, RANGE_LOW_BYTE);
+    byte high_min = read_register(SRF02_I2C_ADDRESS, AUTOTUNE_MINIMUM_HIGH_BYTE);
+    byte low_min = read_register(SRF02_I2C_ADDRESS, AUTOTUNE_MINIMUM_LOW_BYTE);
+
+    int distance = int((high_byte_range << 8) | low_byte_range);
+    if (distance <= SensorLimit) {
+      if (!samePerson) {
+        detected = true;
+        samePerson = true;
+        height = doorHeight - distance;
+        Serial.println(height);
+        digitalWrite(BUZZER_PIN, HIGH);
+        buzzerTimer = millis() + buzzerDelay;
+      }
+    } else {
+      samePerson = false;
+    }
+    sensorTimer = millis() + sensorDelay;
+
+
+    static uint32_t lastSendTime_ms = 0;
+    static uint16_t msgCount = 0;
+    static uint32_t tx_begin_ms = 0;
+
+    if (detected && !transmitting) {
+      detected = false;
+
+      uint8_t payload[1];
+      uint8_t payloadLength = 1;
+
+      payload[0] = height;
+
+      transmitting = true;
+      txDoneFlag = false;
+      tx_begin_ms = millis();
+
+      sendMessage(payload, payloadLength, msgCount);
+      Serial.print("Sending packet ");
+      Serial.print(msgCount++);
+      Serial.print(": ");
+      printBinaryPayload(payload, payloadLength);
+    }
+
+    if (transmitting && txDoneFlag) {
+      uint32_t TxTime_ms = millis() - tx_begin_ms;
+      Serial.print("----> TX completed in ");
+      Serial.print(TxTime_ms);
+      Serial.println(" msecs");
+
+      // Ajustamos txInterval_ms para respetar un duty cycle del 1%
+      uint32_t lapse_ms = tx_begin_ms - lastSendTime_ms;
+      lastSendTime_ms = tx_begin_ms;
+      float duty_cycle = (100.0f * TxTime_ms) / lapse_ms;
+
+      Serial.print("Duty cycle: ");
+      Serial.print(duty_cycle, 1);
+      Serial.println(" %\n");
+
+      transmitting = false;
+      // Reactivamos la recepción de mensajes, que se desactiva
+      // en segundo plano mientras se transmite
+      LoRa.receive();
+    }
+
   }
+
   else{
-    samePerson = false;
-  }
-  sensorTimer = millis() + sensorDelay;
-
-
-  static uint32_t lastSendTime_ms = 0;
-  static uint16_t msgCount = 0;
-  static uint32_t tx_begin_ms = 0;
-      
-  if (detected && !transmitting) {
-    detected = false;
-
-    uint8_t payload[1];
-    uint8_t payloadLength = 1;
-
-    payload[0] = height;
-    
-    transmitting = true;
-    txDoneFlag = false;
-    tx_begin_ms = millis();
-  
-    sendMessage(payload, payloadLength, msgCount);
-    Serial.print("Sending packet ");
-    Serial.print(msgCount++);
-    Serial.print(": ");
-    printBinaryPayload(payload, payloadLength);
-  }                  
-  
-  if (transmitting && txDoneFlag) {
-    uint32_t TxTime_ms = millis() - tx_begin_ms;
-    Serial.print("----> TX completed in ");
-    Serial.print(TxTime_ms);
-    Serial.println(" msecs");
-    
-    // Ajustamos txInterval_ms para respetar un duty cycle del 1% 
-    uint32_t lapse_ms = tx_begin_ms - lastSendTime_ms;
-    lastSendTime_ms = tx_begin_ms; 
-    float duty_cycle = (100.0f * TxTime_ms) / lapse_ms;
-    
-    Serial.print("Duty cycle: ");
-    Serial.print(duty_cycle, 1);
-    Serial.println(" %\n");
-    
-    transmitting = false;
-    // Reactivamos la recepción de mensajes, que se desactiva
-    // en segundo plano mientras se transmite
-    LoRa.receive();   
+    if (buzzerTimer <= millis() && digitalRead(BUZZER_PIN) == HIGH){
+      digitalWrite(BUZZER_PIN, LOW);
+      buzzerTimer = millis() + alarmDelay;
+    }
+    else if (buzzerTimer <= millis() && digitalRead(BUZZER_PIN) == LOW){
+      digitalWrite(BUZZER_PIN, HIGH);
+      buzzerTimer = millis() + alarmDelay;
+    }
   }
 }
 
@@ -298,8 +313,8 @@ void onReceive(int packetSize)
   }
   
   if (incomingLength != receivedBytes) {// Verificamos la longitud del mensaje
-    Serial.print("Receiving error: declared message length " + String(incomingLength));
-    Serial.println(" does not match length " + String(receivedBytes));
+    // Serial.print("Receiving error: declared message length " + String(incomingLength));
+    // Serial.println(" does not match length " + String(receivedBytes));
     return;                             
   }
 
@@ -309,51 +324,12 @@ void onReceive(int packetSize)
   // SyncWord y solo tiene sentido si hay más de dos receptores activos
   // compartiendo la misma palabra de sincronización
   if ((recipient & localAddress) != localAddress ) {
-    Serial.println("Receiving error: This message is not for me.");
+    // Serial.println("Receiving error: This message is not for me.");
     return;
   }
 
   if (sender != localAddress && sender == 0x40){
-
-    // Imprimimos los detalles del mensaje recibido
-    Serial.println("Received from: 0x" + String(sender, HEX));
-    Serial.println("Sent to: 0x" + String(recipient, HEX));
-    Serial.println("Message ID: " + String(incomingMsgId));
-    Serial.println("Payload length: " + String(incomingLength));
-    Serial.print("Payload: ");
-    printBinaryPayload(buffer, receivedBytes);
-    Serial.print("\nRSSI: " + String(LoRa.packetRssi()));
-    Serial.print(" dBm\nSNR: " + String(LoRa.packetSnr()));
-    Serial.println(" dB");
-
-    // Actualizamos remoteNodeConf y lo mostramos
-    if (receivedBytes == 4) {
-      remoteNodeConf.bandwidth_index = buffer[0] >> 4;
-      remoteNodeConf.spreadingFactor = 6 + ((buffer[0] & 0x0F) >> 1);
-      remoteNodeConf.codingRate = 5 + (buffer[1] >> 6);
-      remoteNodeConf.txPower = 2 + ((buffer[1] & 0x3F) >> 1);
-      remoteRSSI = -int(buffer[2]) / 2.0f;
-      remoteSNR  =  int(buffer[3]) - 148;
-    
-      Serial.print("Remote config: BW: ");
-      Serial.print(bandwidth_kHz[remoteNodeConf.bandwidth_index]);
-      Serial.print(" kHz, SPF: ");
-      Serial.print(remoteNodeConf.spreadingFactor);
-      Serial.print(", CR: ");
-      Serial.print(remoteNodeConf.codingRate);
-      Serial.print(", TxPwr: ");
-      Serial.print(remoteNodeConf.txPower);
-      Serial.print(" dBm, RSSI: ");
-      Serial.print(remoteRSSI);
-      Serial.print(" dBm, SNR: ");
-      Serial.print(remoteSNR,1);
-      Serial.println(" dB\n");
-    }
-    else {
-      Serial.print("Unexpected payload size: ");
-      Serial.print(receivedBytes);
-      Serial.println(" bytes\n");
-    }
+    alarm = buffer[0] + 0;
   }
 }
 
