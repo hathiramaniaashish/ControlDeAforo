@@ -342,7 +342,7 @@ void loop() {
     }
   }
 
-  if (!alarm && Serial.availale()){
+  if (!alarm && Serial.available()){
     delay(200);
     clearBuffer();
   }
@@ -470,7 +470,7 @@ void onReceive(int packetSize)
     }
   }
 
-  if (sender != localAddress && (sender == 0x41 || sender == 0x42) && (rtc.getHours() >= 12 || rtc.getHours() <= 4)){
+  if (sender != localAddress && (sender == 0x41 || sender == 0x42) && (rtc.getHours() >= 22 || rtc.getHours() <= 4)){
     alarm = 1;
   }
 }

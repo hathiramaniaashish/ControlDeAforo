@@ -32,9 +32,9 @@ volatile bool alarm = 0;
 #define doorHeight 192
 const int SensorLimit = doorHeight/2;
 // Para Sensor 02727
-//#define SRF02_I2C_ADDRESS byte((0xF0)>>1)
+#define SRF02_I2C_ADDRESS byte((0xF0)>>1)
+//#define SRF02_I2C_ADDRESS byte((0xEA)>>1)
 
-#define SRF02_I2C_ADDRESS byte((0xEA)>>1)
 #define SRF02_I2C_INIT_DELAY 100 // in milliseconds
 #define SRF02_RANGING_DELAY 70 // milliseconds
 
